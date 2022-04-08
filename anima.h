@@ -7,7 +7,6 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
-#include <iostream>
 
 #include <flecs.h>
 
@@ -45,6 +44,8 @@ namespace anima
 		bool checkRequirments(world_t*);
 		world_t applyResult(world_t);
 		void addAction(IAction* action) { _actions.push_back(action); }
+		bool executeAction(int actionIndex) { return _actions.at(actionIndex)->envoke(); };
+		bool isTaskFinished(unsigned int index) { return index + 1 == _actions.size(); };
 	};
 	
 	typedef std::vector<Task*> plan_t;
@@ -91,20 +92,26 @@ namespace anima
 	};
 	
 	struct comp_AI {
+		comp_AI(std::vector<Task*> tasks, world_t blackboard, world_t goal) : tasks(tasks), internalBlackBoard(blackboard), goal(goal) {};
+		comp_AI() = default;
+		~comp_AI() = default;
+		
 		bool needPlan { true };
-		std::vector<Task*> tasks {};
-		world_t internalBlackBoard {};
-		world_t goal {};
-		plan_t plan {};
+		std::vector<Task*> tasks;
+		world_t internalBlackBoard;
+		world_t goal;
+		plan_t plan;
+		int planStep { 0 };
+		int taskStep { 0 };
 	};
 	
-	class aiPlannerSystem
+	class aiSystem
 	{
 	private:
 		flecs::system<comp_AI> _system;
 	public:
-		aiPlannerSystem(flecs::world*);
-		~aiPlannerSystem() = default;
+		aiSystem(flecs::world*);
+		~aiSystem() = default;
 	};
 	
 } // namespace anima

@@ -1,5 +1,8 @@
 #include "anima.h"
 
+#include <iostream>
+#include <chrono>
+
 using namespace anima;
 
 template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
@@ -101,9 +104,15 @@ bool AStar::constructPlan(plan_t* out, world_t* start, world_t* goal, std::vecto
 {
 	aStarNode* crrntNode = _openNodes.emplace_back(
 		&_tmpNodes.emplace_back(
-			&_tmpWorlds.emplace_back(*start), nullptr, nullptr, 0, worldDistance(start, goal) //start node
+			&_tmpWorlds.emplace_back(*start),
+			nullptr,
+			nullptr,
+			0,
+			worldDistance(start, goal) //start node
 		)
 	);
+	
+	auto value = _tmpWorlds.max_size();
 	
 	bool depthReached { false };
 	bool pathFound { false };
@@ -163,22 +172,44 @@ cleanup:
 	}
 }
 
-aiPlannerSystem::aiPlannerSystem(flecs::world* world)
+aiSystem::aiSystem(flecs::world* world)
 {
-	// TODO: attach global black board as singleton component to world later, ghtn also
-	
 	_system = world->system<comp_AI>()
-		.iter([world](flecs::iter it, comp_AI* ai) {
-			const world_t* globalBlackBoard = world->get<world_t>();
-			AStar* GHTN = world->get_mut<AStar>();
+		.iter([](flecs::iter it, comp_AI* ai) {
+			auto world = it.world();
+			const world_t* globalBlackBoard = world.get<world_t>();
+			AStar* GHTN = world.get_mut<AStar>();
 			
 			for (auto i : it) {
-				if (ai[i].needPlan) {
+				if (ai[i].needPlan) [[unlikely]] {
 					world_t mergedBlackBoard { ai[i].internalBlackBoard };
 					mergedBlackBoard.insert(globalBlackBoard->begin(), globalBlackBoard->end());
 					
+					ai[i].plan.clear();
 					GHTN->constructPlan(&ai[i].plan, &mergedBlackBoard, &ai[i].goal, &ai[i].tasks);
 					ai[i].needPlan = false;
+				} else [[likely]] {
+					auto* plan = &ai[i].plan;
+					if (ai[i].planStep + 1 == plan->size()) [[likely]] {
+						auto task = plan->at(ai[i].planStep);
+						if (task->isTaskFinished(ai[i].taskStep)) [[likely]] {
+							if (not task->executeAction(ai[i].taskStep)) {
+								//TODO: add logging functionaly and log failed action
+								
+								ai[i].planStep = 0;
+								ai[i].taskStep = 0;
+								ai[i].needPlan = true;
+							}
+							ai[i].taskStep += 1;
+						} else [[unlikely]] {
+							ai[i].planStep += 1;
+							ai[i].taskStep = 0;
+						}
+					} else [[unlikely]] {
+						ai[i].planStep = 0;
+						ai[i].taskStep = 0;
+						ai[i].needPlan = true;
+					}
 				}
 			}
 		});
@@ -201,7 +232,6 @@ class action3 : public IAction
  
 int main()
 {
-	plan_t plan;
 	world_t world{ {0, true}, {1, 30}, {2, "b"} };
 	world_t goal{ {0, false}, {1, 20}, {2, "a"} };
 	
@@ -223,14 +253,25 @@ int main()
 	tasks.push_back(&task_3);
 	
 	flecs::world ecs;
+	
 	ecs.set<AStar>( { 20, true } );
 	ecs.set<world_t>( {} ); // globalBlackBoard
 	
 	// add a bunch of entities
+	for (int i = 0; i != 10; i++) {
+		ecs.entity().set<comp_AI>( {tasks, world, goal} );
+	}
 	
 	// attach systems
+	aiSystem hold { &ecs };
 	
-	ecs.progress(0);
+	auto start = std::chrono::high_resolution_clock::now();
+	for (int i = 0; i != 1; i++) {
+		ecs.progress(0);
+	}
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+	
+	std::wcout << "Time(ms): " << duration.count();
 	
 	return 0;
 }
