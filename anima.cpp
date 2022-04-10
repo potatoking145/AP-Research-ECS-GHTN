@@ -42,7 +42,8 @@ static int worldDistance(world_t* lhs, world_t* rhs)
 	int distance { 0 };
 	for (auto elem : *lhs)
 	{
-		distance += worldstateDistance(elem.second, rhs->at(elem.first));
+		if (rhs->contains(elem.first))
+			distance += worldstateDistance(elem.second, rhs->operator[](elem.first));
 	}
 	return distance;
 }
@@ -51,7 +52,7 @@ bool Task::checkRequirments(world_t* in)
 {
 	for (auto elem : _actions)
 	{
-		if (not elem->checkRequirments(in))
+		if (not elem.checkRequirments(in))
 			return false;
 	}
 	return true;
@@ -61,36 +62,12 @@ world_t Task::applyResult(world_t in)
 {
 	for (auto elem : _actions)
 	{
-		elem->applyResult(in);
+		elem.applyResult(in);
 	}
 	return in;
 }
 
-AStar::AStar(uint8_t maxDepth, bool allowPlanAfterDepth)
-	: _maxDepth(maxDepth),
-	_allowPlanAfterDepth(allowPlanAfterDepth)
-{
-	_tmpWorlds.reserve(_maxDepth);
-	_tmpNodes.reserve(_maxDepth);
-	_openNodes.reserve(_maxDepth);
-};
-
-void AStar::setDepth(uint8_t value)
-{
-	_maxDepth = value;
-	
-	_tmpWorlds.clear();
-	_tmpNodes.clear();
-	_openNodes.clear();
-	_tmpNodes.shrink_to_fit();
-	_tmpWorlds.shrink_to_fit();
-	_openNodes.shrink_to_fit();
-	_tmpWorlds.reserve(_maxDepth);
-	_tmpNodes.reserve(_maxDepth);
-	_openNodes.reserve(_maxDepth);
-}
-
-void AStar::populatePlan(plan_t* out, aStarNode* start)
+void AStar::populatePlan(plan_t* out, aStarNode* start) const
 {
 	auto crrntNode = start;
 	while (crrntNode->g != 0)
@@ -100,42 +77,47 @@ void AStar::populatePlan(plan_t* out, aStarNode* start)
 	}
 }
 
-bool AStar::constructPlan(plan_t* out, world_t* start, world_t* goal, std::vector<Task*>* tasks)
+bool AStar::constructPlan(plan_t* out, world_t* start, world_t* goal, std::vector<Task*>* tasks) const
 {
-	aStarNode* crrntNode = _openNodes.emplace_back(
-		&_tmpNodes.emplace_back(
-			&_tmpWorlds.emplace_back(*start),
+	assert(not tasks->empty());
+	assert(not goal->empty());
+	assert(out->empty());
+	assert(not (goal->size() > start->size()));
+	
+	std::vector<aStarNode> tmpNodes;
+	std::vector<aStarNode*> openNodes;
+	
+	aStarNode* crrntNode = openNodes.emplace_back(
+		&tmpNodes.emplace_back( //start node
+			*start,
 			nullptr,
 			nullptr,
 			0,
-			worldDistance(start, goal) //start node
+			worldDistance(start, goal)
 		)
 	);
 	
-	auto value = _tmpWorlds.max_size();
-	
 	bool depthReached { false };
 	bool pathFound { false };
-	while (not _openNodes.empty()) [[likely]]
+	while (not openNodes.empty()) [[likely]]
 	{
-		std::sort(_openNodes.begin(), _openNodes.end(), aStarNodeCompare());
-		crrntNode = _openNodes.front();
+		std::sort(openNodes.begin(), openNodes.end(), aStarNodeCompare());
+		crrntNode = openNodes.front();
 		
-		if (worldEquality(goal, crrntNode->world)) [[unlikely]] {
+		if (worldEquality(goal, &crrntNode->world)) [[unlikely]] {
 			pathFound = true;
 			break;
 		} else [[likely]] { //not at the end yet
-			_openNodes.erase(std::find(_openNodes.begin(), _openNodes.end(), crrntNode));
-			
 			for (auto neighbor : *tasks) // go through neighbors
 			{
-				if (neighbor->checkRequirments(crrntNode->world)) {
-					world_t* newWorld = &_tmpWorlds.emplace_back(neighbor->applyResult(*crrntNode->world));
-					uint32_t newF = crrntNode->g + worldDistance(newWorld, goal) + 1;
+				if (neighbor->checkRequirments(&crrntNode->world)) {
+					world_t newWorld = neighbor->applyResult(crrntNode->world);
+					
+					uint32_t newF = crrntNode->g + worldDistance(&newWorld, goal) + 1;
 					
 					if (crrntNode->f >= newF) { // this path is better or atleast the same
-						auto node = _openNodes.emplace_back(
-							&_tmpNodes.emplace_back(
+						auto node = openNodes.emplace_back(
+							&tmpNodes.emplace_back(
 								newWorld,
 								crrntNode,
 								neighbor,
@@ -151,14 +133,13 @@ bool AStar::constructPlan(plan_t* out, world_t* start, world_t* goal, std::vecto
 					}
 				} // is neighbor valid
 			} // neighbors
+			
+			openNodes.erase(std::find(openNodes.begin(), openNodes.end(), crrntNode));
+			
 		} // worldEquality else
 	} // not _openNodes.empty() 
 	
 cleanup:
-	_tmpWorlds.clear();
-	_tmpNodes.clear();
-	_openNodes.clear();
-	
 	if (pathFound) {
 		if (depthReached == true) {
 			if (_allowPlanAfterDepth == true)
@@ -172,13 +153,13 @@ cleanup:
 	}
 }
 
-aiSystem::aiSystem(flecs::world* world)
+[[nodiscard("Unable to access system later.")]] flecs::system<comp_AI> anima::attatchAISystem(flecs::world* world)
 {
-	_system = world->system<comp_AI>()
+	return world->system<comp_AI>()
 		.iter([](flecs::iter it, comp_AI* ai) {
 			auto world = it.world();
 			const world_t* globalBlackBoard = world.get<world_t>();
-			AStar* GHTN = world.get_mut<AStar>();
+			const AStar* GHTN = world.get<AStar>();
 			
 			for (auto i : it) {
 				if (ai[i].needPlan) [[unlikely]] {
@@ -190,7 +171,7 @@ aiSystem::aiSystem(flecs::world* world)
 					ai[i].needPlan = false;
 				} else [[likely]] {
 					auto* plan = &ai[i].plan;
-					if (ai[i].planStep + 1 == plan->size()) [[likely]] {
+					if ((unsigned int)(ai[i].planStep + 1) == plan->size()) [[likely]] {
 						auto task = plan->at(ai[i].planStep);
 						if (task->isTaskFinished(ai[i].taskStep)) [[likely]] {
 							if (not task->executeAction(ai[i].taskStep)) {
@@ -235,6 +216,14 @@ int main()
 	world_t world{ {0, true}, {1, 30}, {2, "b"} };
 	world_t goal{ {0, false}, {1, 20}, {2, "a"} };
 	
+	for (int i = 0; i <= 196; i++) {
+		world.emplace(std::make_pair((uint_fast8_t)(i+3), (worldstate_t)true ));
+		goal.emplace(std::make_pair((uint_fast8_t)(i+3), (worldstate_t)true ));
+	}
+	
+	std::wcout << world.size() << std::endl;
+	std::wcout << goal.size() << std::endl;
+	
 	action1 action_1;
 	action2 action_2;
 	action3 action_3;
@@ -251,27 +240,39 @@ int main()
 	tasks.push_back(&task_1);
 	tasks.push_back(&task_2);
 	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
+	tasks.push_back(&task_3);
 	
-	flecs::world ecs;
-	
-	ecs.set<AStar>( { 20, true } );
-	ecs.set<world_t>( {} ); // globalBlackBoard
-	
-	// add a bunch of entities
-	for (int i = 0; i != 10; i++) {
-		ecs.entity().set<comp_AI>( {tasks, world, goal} );
-	}
-	
-	// attach systems
-	aiSystem hold { &ecs };
-	
-	auto start = std::chrono::high_resolution_clock::now();
-	for (int i = 0; i != 1; i++) {
+	int averageTime { 0 };
+	const int times = 10;
+	for(int y = 0; y != times; y++) {
+		flecs::world ecs;
+		
+		ecs.set<world_t>( {} ); // globalBlackBoard
+		ecs.set<AStar>( {20, true} );
+		
+		// add a bunch of entities
+		for (int i = 0; i != 100; i++) {
+			ecs.entity().set<comp_AI>( {tasks, world, goal} );
+		}
+		
+		// attach systems
+		auto system = attatchAISystem(&ecs);
+		
+		auto start = std::chrono::high_resolution_clock::now();
 		ecs.progress(0);
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+		
+		averageTime += duration.count();
 	}
-	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
 	
-	std::wcout << "Time(ms): " << duration.count();
+	averageTime /= times;
+	std::wcout << averageTime << " (ms)";
 	
 	return 0;
 }

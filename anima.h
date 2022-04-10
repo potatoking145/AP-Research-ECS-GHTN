@@ -7,13 +7,12 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
-
+#include <assert.h>
 #include <flecs.h>
 
 namespace anima 
 {
 	typedef std::variant<bool, int, std::string> worldstate_t;
-	
 	typedef std::unordered_map<uint_fast8_t, worldstate_t> world_t;
 	
 	class IAction
@@ -26,25 +25,22 @@ namespace anima
 		bool virtual envoke() { return true; };
 	};
 	
-	typedef std::vector<IAction*> task_t;
-	
 	class Task
 	{
 	private:
-		task_t _actions;
+		std::vector<IAction> _actions;
 	public:
 #if debug == 1
 		std::string name;
 		Task(std::string s) : name(s) {};
-#else
-		Task() = default;
 #endif
+		Task() = default;
 		~Task() = default;
 		
 		bool checkRequirments(world_t*);
 		world_t applyResult(world_t);
-		void addAction(IAction* action) { _actions.push_back(action); }
-		bool executeAction(int actionIndex) { return _actions.at(actionIndex)->envoke(); };
+		void addAction(IAction* action) { _actions.push_back(*action); }
+		bool executeAction(int actionIndex) { return _actions.at(actionIndex).envoke(); };
 		bool isTaskFinished(unsigned int index) { return index + 1 == _actions.size(); };
 	};
 	
@@ -55,10 +51,10 @@ namespace anima
 	private:
 		struct aStarNode
 		{
-			aStarNode(world_t* w, aStarNode* p, Task* t, uint16_t g, uint32_t f) : world(w), previous(p), taskTaken(t), g(g), f(f) {};
+			aStarNode(world_t w, aStarNode* p, Task* t, uint16_t g, uint32_t f) : world(w), previous(p), taskTaken(t), g(g), f(f) {};
 			~aStarNode() = default;
 			
-			world_t* world;
+			world_t world;
 			aStarNode* previous;
 			Task* taskTaken;
 			uint16_t g;
@@ -74,25 +70,27 @@ namespace anima
 			}
 		};
 		
-		void populatePlan(plan_t*, aStarNode*);
+		void populatePlan(plan_t*, aStarNode*) const;
 		
 		uint8_t _maxDepth { 20 };
 		bool _allowPlanAfterDepth { true };
-		std::vector<world_t> _tmpWorlds;
-		std::vector<aStarNode> _tmpNodes;
-		std::vector<aStarNode*> _openNodes;
 	public:
-		AStar(uint8_t, bool);
+		AStar(uint8_t maxDepth, bool allowPlanAfterDepth)
+			: _maxDepth(maxDepth),
+			_allowPlanAfterDepth(allowPlanAfterDepth) {};
 		AStar() = default;
 		~AStar() = default;
 		
-		void setDepth(uint8_t value);
+		void setDepth(uint8_t value) { _maxDepth = value; };
 		void setAllowPlanAfterDepth(bool value)  { _allowPlanAfterDepth = value; };
-		bool constructPlan(plan_t* out, world_t* start, world_t* goal, std::vector<Task*>* tasks);
+		bool constructPlan(plan_t* out, world_t* start, world_t* goal, std::vector<Task*>* tasks) const;
 	};
 	
-	struct comp_AI {
-		comp_AI(std::vector<Task*> tasks, world_t blackboard, world_t goal) : tasks(tasks), internalBlackBoard(blackboard), goal(goal) {};
+	struct comp_AI
+	{
+		comp_AI(std::vector<Task*> tasks, world_t blackboard, world_t goal)
+		: tasks(tasks), internalBlackBoard(blackboard), goal(goal) {};
+		
 		comp_AI() = default;
 		~comp_AI() = default;
 		
@@ -105,14 +103,7 @@ namespace anima
 		int taskStep { 0 };
 	};
 	
-	class aiSystem
-	{
-	private:
-		flecs::system<comp_AI> _system;
-	public:
-		aiSystem(flecs::world*);
-		~aiSystem() = default;
-	};
+	flecs::system<comp_AI> attatchAISystem(flecs::world*);
 	
 } // namespace anima
 
